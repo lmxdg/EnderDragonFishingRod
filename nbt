@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""AutoForge: Minecraft NBT 文件读写工具。
+
+NBT 是二进制格式,禁止手写字节/gzip+struct 手搓 —— 错一个字节游戏就崩,而且
+编译期/流水线完全查不出来。用本工具以 SNBT 文本(/give 命令里那种花括号语法)读写。
+
+用法:
+  ./nbt read <文件.nbt>                    # NBT -> SNBT 打印(自动识别 gzip)
+  ./nbt read <某.jar> <jar内路径.nbt>      # 直接读 jar 里的 NBT(抄现成结构当模板)
+  echo '<SNBT>' | ./nbt write <文件.nbt>   # SNBT -> 合法 NBT(默认 gzip 压缩)
+  ... | ./nbt write <文件.nbt> --plain     # 不压缩
+
+结构模板(structure template)必备字段: size / blocks / palette / DataVersion,
+拿不准就先 read 一个原版或前置 jar 里的现成 .nbt 对照着写。
+"""
+import gzip
+import io
+import sys
+import zipfile
+
+try:
+    import nbtlib
+except ImportError:
+    sys.stderr.write("nbtlib 不可用;联系维护者(镜像 requirements 应包含 nbtlib)\n")
+    sys.exit(2)
+
+
+def _parse_bytes(data: bytes) -> "nbtlib.File":
+    if data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
+    return nbtlib.File.parse(io.BytesIO(data))
+
+
+def cmd_read(args):
+    if len(args) == 1:
+        with open(args[0], "rb") as f:
+            tag = _parse_bytes(f.read())
+    elif len(args) == 2:
+        with zipfile.ZipFile(args[0]) as z:
+            tag = _parse_bytes(z.read(args[1]))
+    else:
+        sys.stderr.write(__doc__)
+        return 1
+    print(nbtlib.serialize_tag(tag, indent=2))
+    return 0
+
+
+def cmd_write(args):
+    plain = "--plain" in args
+    paths = [a for a in args if not a.startswith("--")]
+    if len(paths) != 1:
+        sys.stderr.write(__doc__)
+        return 1
+    text = sys.stdin.read()
+    tag = nbtlib.parse_nbt(text)
+    if not isinstance(tag, nbtlib.Compound):
+        sys.stderr.write("根节点必须是 Compound(花括号包住整体)\n")
+        return 1
+    nbtlib.File(tag).save(paths[0], gzipped=not plain)
+    # 回读校验:写出的文件必须能完整解析(手搓二进制就是死在这一步没人查)
+    with open(paths[0], "rb") as f:
+        _parse_bytes(f.read())
+    print(f"OK: {paths[0]}")
+    return 0
+
+
+def main():
+    if len(sys.argv) < 3:
+        sys.stderr.write(__doc__)
+        return 1
+    cmd, args = sys.argv[1], sys.argv[2:]
+    if cmd == "read":
+        return cmd_read(args)
+    if cmd == "write":
+        return cmd_write(args)
+    sys.stderr.write(__doc__)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
